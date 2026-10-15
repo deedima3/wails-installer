@@ -11,10 +11,11 @@ import (
 type DirectoryPicker func() (string, error)
 
 type State struct {
-	Status   string   `json:"status"`
-	Progress Progress `json:"progress"`
-	Error    string   `json:"error"`
-	Result   *Result  `json:"result"`
+	Status          string           `json:"status"`
+	Progress        Progress         `json:"progress"`
+	Error           string           `json:"error"`
+	Result          *Result          `json:"result"`
+	UninstallResult *UninstallResult `json:"uninstallResult"`
 }
 
 // Service is a small binding-safe API for Wails v2 Bind or v3 NewService.
@@ -43,7 +44,14 @@ func (s *Service) State() State {
 	state := s.state
 	if state.Result != nil {
 		result := *state.Result
+		result.Warnings = append([]string(nil), result.Warnings...)
 		state.Result = &result
+	}
+	if state.UninstallResult != nil {
+		result := *state.UninstallResult
+		result.Warnings = append([]string(nil), result.Warnings...)
+		result.PreservedFiles = append([]string(nil), result.PreservedFiles...)
+		state.UninstallResult = &result
 	}
 	return state
 }
@@ -56,6 +64,18 @@ func (s *Service) Browse() (string, error) {
 }
 
 func (s *Service) Install(request Request) (Result, error) {
+	return s.runInstall(request, false)
+}
+
+func (s *Service) Upgrade(request Request) (Result, error) {
+	return s.runInstall(request, true)
+}
+
+func (s *Service) Inspect(directory string) (*ManagedInstallation, error) {
+	return s.installer.Inspect(directory)
+}
+
+func (s *Service) runInstall(request Request, upgrade bool) (Result, error) {
 	s.mu.Lock()
 	if s.cancel != nil {
 		s.mu.Unlock()
@@ -64,9 +84,19 @@ func (s *Service) Install(request Request) (Result, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	s.state = State{Status: "installing", Progress: Progress{Phase: "preparing"}}
+	if upgrade {
+		s.state.Status = "upgrading"
+	}
 	s.mu.Unlock()
 	defer cancel()
-	result, err := s.installer.Install(ctx, request, func(p Progress) { s.mu.Lock(); s.state.Progress = p; s.mu.Unlock() })
+	report := func(p Progress) { s.mu.Lock(); s.state.Progress = p; s.mu.Unlock() }
+	var result Result
+	var err error
+	if upgrade {
+		result, err = s.installer.Upgrade(ctx, request, report)
+	} else {
+		result, err = s.installer.Install(ctx, request, report)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cancel = nil
@@ -77,6 +107,32 @@ func (s *Service) Install(request Request) (Result, error) {
 		}
 	} else {
 		s.state.Status, s.state.Result = "complete", &result
+	}
+	return result, err
+}
+
+func (s *Service) Uninstall(directory string) (UninstallResult, error) {
+	s.mu.Lock()
+	if s.cancel != nil {
+		s.mu.Unlock()
+		return UninstallResult{}, ErrBusy
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancel = cancel
+	s.state = State{Status: "uninstalling", Progress: Progress{Phase: "preparing"}}
+	s.mu.Unlock()
+	defer cancel()
+	result, err := s.installer.Uninstall(ctx, directory, func(p Progress) { s.mu.Lock(); s.state.Progress = p; s.mu.Unlock() })
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cancel = nil
+	if err != nil {
+		s.state.Status, s.state.Error = "error", err.Error()
+		if errors.Is(err, context.Canceled) {
+			s.state.Status = "cancelled"
+		}
+	} else {
+		s.state.Status, s.state.UninstallResult = "uninstalled", &result
 	}
 	return result, err
 }

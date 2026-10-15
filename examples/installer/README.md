@@ -55,10 +55,10 @@ macOS:
 
 ```sh
 mkdir -p payload/Lumen.app/Contents/MacOS
-go build -tags 'desktop,production' -o payload/Lumen.app/Contents/MacOS/lumen ./cmd/lumen
+CGO_LDFLAGS="-framework UniformTypeIdentifiers" go build -tags 'desktop,production' -o payload/Lumen.app/Contents/MacOS/lumen ./cmd/lumen
 ```
 
-For a complete macOS bundle, copy the `Info.plist` below into `payload/Lumen.app/Contents/Info.plist`, then run `wails dev`. For distribution, use your target application's bundle produced by `wails build`, with its icons and signing workflow.
+For a complete macOS bundle, copy the `Info.plist` below into `payload/Lumen.app/Contents/Info.plist`, then run `CGO_LDFLAGS="-framework UniformTypeIdentifiers" wails dev`. The explicit framework works around a missing link flag in the pinned Wails v2.15.0 release with current SDKs; the root helper scripts add it automatically. For distribution, use your target application's bundle produced by `wails build`, with its icons and signing workflow.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -91,7 +91,9 @@ Distribute the resulting installer from `build/bin`. Test the installed target o
 
 Choose a new directory in a writable parent. Leave startup unchecked for an isolated test, or enable it to test the current user's real launch-at-login behavior. After installation, click Open Lumen. The sample application displays a welcome screen.
 
-This example creates a real user login entry when selected. To clean up manually after testing, close Lumen, delete the chosen installation directory, and remove only the `io.example.lumen` startup entry created by this example:
+To upgrade, change `Version` and the payload, rebuild the installer, close Lumen, and select the same installation path. To uninstall, close Lumen, open the installer, choose that path, select Uninstall application, and confirm removal. Personal and modified files are retained. See the [lifecycle guide](../../docs/lifecycle.md).
+
+This example creates a real user login entry when selected. Uninstall removes the owned entry. If manual recovery is necessary, inspect only the `io.example.lumen` entry created by this example:
 
 | Platform | Startup entry |
 | --- | --- |
@@ -99,4 +101,4 @@ This example creates a real user login entry when selected. To clean up manually
 | macOS | `~/Library/LaunchAgents/io.example.lumen.plist` |
 | Linux | `$XDG_CONFIG_HOME/autostart/io.example.lumen.desktop`, defaulting to `~/.config/autostart/io.example.lumen.desktop` |
 
-Repeated installation into the same directory or with a conflicting login entry is refused. The library does not implement upgrades or uninstalling.
+`Install` refuses repeated fresh installation into an existing directory. `Upgrade` and `Uninstall` require the ownership receipt written by this library. Earlier installations without receipts need the migration described in the lifecycle guide.

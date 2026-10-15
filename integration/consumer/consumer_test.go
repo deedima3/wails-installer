@@ -74,7 +74,52 @@ func TestImportedServiceInstallsRegistersAndLaunches(t *testing.T) {
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("launch startup shortcut: %v: %s", err, output)
 		}
-		waitForLaunch(t, result.Executable)
+		pid = waitForLaunch(t, result.Executable)
+	}
+	// The same public API supports maintenance after the installer is restarted.
+	if managed, err := service.Inspect(destination); err != nil || managed == nil || managed.Version != "1.0.0" {
+		t.Fatalf("inspect installed application: %+v %v", managed, err)
+	}
+	if runtime.GOOS == "darwin" {
+		waitForMacExit(t, pid)
+	}
+	// Do not run upgrade against a still-running executable on Windows.
+	if runtime.GOOS == "windows" {
+		command := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "$p=Get-Process -Id "+strconv.Itoa(pid)+" -ErrorAction SilentlyContinue; if($p){$p.WaitForExit()}; exit 0")
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("wait for probe: %v: %s", err, output)
+		}
+	}
+	if err := os.Remove(filepath.Join(filepath.Dir(result.Executable), "launched.txt")); err != nil {
+		t.Fatal(err)
+	}
+	writePersonal := filepath.Join(destination, "notes.txt")
+	if err := os.WriteFile(writePersonal, []byte("keep my notes"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	newEngine, err := installer.New(installer.Config{ID: "io.example.consumer", Name: "Consumer app", Version: "2.0.0", Payload: os.DirFS(source), Executable: executable, DefaultDirectory: destination, AllowStartup: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	maintenance := installer.NewService(newEngine, nil)
+	if _, err := maintenance.Upgrade(installer.Request{Directory: destination, Startup: true}); err != nil {
+		t.Fatal(err)
+	}
+	if managed, err := maintenance.Inspect(destination); err != nil || managed == nil || managed.Version != "2.0.0" {
+		t.Fatalf("inspect upgrade: %+v %v", managed, err)
+	}
+	removed, err := maintenance.Uninstall(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed.DirectoryRemoved || len(removed.PreservedFiles) != 1 || removed.PreservedFiles[0] != "notes.txt" {
+		t.Fatalf("uninstall did not preserve personal files: %+v", removed)
+	}
+	if data, err := os.ReadFile(writePersonal); err != nil || string(data) != "keep my notes" {
+		t.Fatalf("personal data changed: %q %v", data, err)
+	}
+	if _, err := os.Stat(result.Executable); !os.IsNotExist(err) {
+		t.Fatalf("application was not removed: %v", err)
 	}
 }
 

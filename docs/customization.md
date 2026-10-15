@@ -78,7 +78,7 @@ config.Hooks.AfterCopy = func(ctx context.Context, install installer.Installatio
 }
 ```
 
-Hooks run on the installation goroutine. `BeforeCopy` runs after creating the private staging directory. `AfterCopy` runs after all payload files have been copied, before publishing the directory. Errors abort installation and remove staging files. External side effects need their own rollback. Do not create symlinks inside staging or modify the final destination from a hook.
+Hooks run on the operation goroutine. `BeforeCopy` and `AfterCopy` run for both install and upgrade. On upgrade, staging already contains retained personal files. `BeforeUninstall` runs with a staging directory containing files that will be kept. Errors abort before publication. External side effects need their own rollback. Do not create symlinks inside staging or modify the final destination from a hook. Use `Config.PreservePaths`, such as `[]string{"settings", "data"}`, for mutable application data. See [data preservation](lifecycle.md#personal-data-and-preserved-paths).
 
 ## Replace startup registration
 
@@ -100,7 +100,19 @@ func (CompanyStartup) Disable(ctx context.Context, app installer.Info) error {
 engine, err := installer.New(config, installer.WithStartupManager(CompanyStartup{}))
 ```
 
-`registerUserLogin` and `removeUserLogin` stand for your own implementation. The library calls `Enable` only when `AllowStartup` and the install request's `startup` are both true. It does not call `Disable` during installation, because a failed `Enable` must not have changed the registration. `Disable` is available on your implementation for your own settings or uninstall flow. There is no built-in uninstaller in this release.
+`registerUserLogin` and `removeUserLogin` stand for your own implementation. `Enable` and `Disable` must leave registration unchanged on failure. The simple interface supports fresh installs. To manage startup during upgrades and uninstall, also implement `TransactionalStartupManager`:
+
+```go
+func (CompanyStartup) Snapshot(ctx context.Context, app installer.Info) ([]byte, error) {
+    return readUserLogin(ctx, app.ID) // nil means no entry, otherwise a stable snapshot
+}
+
+func (CompanyStartup) Restore(ctx context.Context, app installer.Info, snapshot []byte) error {
+    return restoreUserLogin(ctx, app.ID, snapshot) // nil removes a newly created entry
+}
+```
+
+Those helpers are supplied by your integration. Snapshots must be stable across reads, and restoration must be atomic. Serialize operations that share an application ID in your manager if it can be used concurrently across install directories. The library uses snapshots to validate ownership and restore the previous registration if maintenance fails. The built-in manager implements this interface on all three platforms.
 
 ## Replace launching
 

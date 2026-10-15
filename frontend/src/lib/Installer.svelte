@@ -1,13 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { errorMessage } from './client.js';
-  import type { InstallerClient, InstallerInfo, InstallerState, InstallResult } from './types.js';
+  import type { InstallerClient, InstallerInfo, InstallerState, InstallResult, ManagedInstallation, UninstallResult } from './types.js';
 
   export let client: InstallerClient;
   export let eyebrow = 'APPLICATION SETUP';
   export let logoUrl = '';
   export let className = '';
   export let onInstalled: ((result: InstallResult) => void) | undefined = undefined;
+  export let onUninstalled: ((result: UninstallResult) => void) | undefined = undefined;
 
   let info: InstallerInfo | null = null;
   let state: InstallerState | null = null;
@@ -23,14 +24,23 @@
   let timer: ReturnType<typeof setTimeout> | undefined;
   let revision = 0;
   let pendingInstall = false;
-  $: busy = pendingInstall || state?.status === 'installing';
+  let operation: 'install' | 'upgrade' | 'uninstall' = 'install';
+  let managed: ManagedInstallation | null = null;
+  let inspecting = false;
+  let confirmed = false;
+  let inspectRevision = 0;
+  let inspectTimer: ReturnType<typeof setTimeout> | undefined;
+  const running = (status: string | undefined) => ['installing', 'upgrading', 'uninstalling'].includes(status ?? '');
+  $: busy = pendingInstall || running(state?.status);
   $: complete = state?.status === 'complete';
+  $: uninstalled = state?.status === 'uninstalled';
+  $: warnings = (uninstalled ? state?.uninstallResult?.warnings : state?.result?.warnings) ?? [];
   $: percent = Math.min(100, Math.max(0, state?.progress.percent ?? 0));
-  $: step = complete ? 3 : busy ? 2 : 1;
+  $: step = complete || uninstalled ? 3 : busy ? 2 : 1;
 
   onMount(() => {
     void load();
-    return () => { disposed = true; revision++; clearTimeout(timer); };
+    return () => { disposed = true; revision++; inspectRevision++; clearTimeout(timer); clearTimeout(inspectTimer); };
   });
 
   async function load() {
@@ -39,12 +49,41 @@
       const [metadata, current] = await Promise.all([client.info(), client.state()]);
       if (disposed) return;
       info = metadata; state = current;
-      directory = current.result?.directory ?? metadata.defaultDirectory;
+      directory = current.result?.directory ?? current.uninstallResult?.directory ?? metadata.defaultDirectory;
       startup = current.result?.startup ?? false;
       error = current.error;
-      if (current.status === 'installing') schedulePoll();
+      if (running(current.status)) {
+        operation = current.status === 'upgrading' ? 'upgrade' : current.status === 'uninstalling' ? 'uninstall' : 'install';
+        schedulePoll();
+      } else if (!complete && !uninstalled) await inspectDirectory(directory);
     } catch (e) { error = errorMessage(e); }
     finally { loading = false; }
+  }
+
+  async function inspectDirectory(path: string) {
+    const token = ++inspectRevision;
+    if (!client.inspect || !path.trim()) { managed = null; operation = 'install'; inspecting = false; return; }
+    inspecting = true; confirmed = false;
+    try {
+      const found = await client.inspect(path.trim());
+      if (disposed || token !== inspectRevision || busy) return;
+      managed = found; operation = found ? 'upgrade' : 'install'; startup = found?.startup ?? false;
+    } catch (e) {
+      if (!disposed && token === inspectRevision) { managed = null; operation = 'install'; error = errorMessage(e); }
+    } finally { if (token === inspectRevision) inspecting = false; }
+  }
+
+  function scheduleInspect(path: string) {
+    clearTimeout(inspectTimer); inspectRevision++; managed = null; confirmed = false;
+    if (!client.inspect) return;
+    inspecting = true;
+    inspectTimer = setTimeout(() => void inspectDirectory(path), 200);
+  }
+
+  async function manage() {
+    state = { status: 'ready', progress: { phase: '', file: '', copiedBytes: 0, totalBytes: 0, percent: 0 }, error: '', result: null };
+    error = ''; launched = false;
+    await inspectDirectory(directory);
   }
 
   function schedulePoll() {
@@ -59,8 +98,8 @@
         if (pendingInstall && next.status === 'ready') { schedulePoll(); return; }
         state = next;
         if (next.error) error = next.error;
-        if (cancelRequested && next.status === 'installing') await client.cancel();
-        if (next.status === 'installing') schedulePoll();
+        if (cancelRequested && running(next.status)) await client.cancel();
+        if (running(next.status)) schedulePoll();
       } catch (e) {
         if (disposed || currentRevision !== revision) return;
         error = `Cannot read installation progress: ${errorMessage(e)}`;
@@ -71,26 +110,39 @@
 
   async function browse() {
     browsing = true; error = '';
-    try { const path = await client.browse(); if (path) directory = path; }
+    try { const path = await client.browse(); if (path) { directory = path; await inspectDirectory(path); } }
     catch (e) { error = errorMessage(e); }
     finally { browsing = false; }
   }
 
   async function install() {
-    if (!info || busy || browsing) return;
+    if (!info || busy || browsing || inspecting || operation === 'uninstall' && !confirmed) return;
+    const selected = operation;
     error = ''; cancelRequested = false; pendingInstall = true;
-    state = { status: 'installing', progress: { phase: 'preparing', file: '', copiedBytes: 0, totalBytes: 0, percent: 0 }, error: '', result: null };
+    state = { status: selected === 'upgrade' ? 'upgrading' : selected === 'uninstall' ? 'uninstalling' : 'installing', progress: { phase: 'preparing', file: '', copiedBytes: 0, totalBytes: 0, percent: 0 }, error: '', result: null };
     revision++; schedulePoll();
     let result: InstallResult | undefined;
+    let removed: UninstallResult | undefined;
     try {
-      result = await client.install({ directory: directory.trim(), startup: info.allowStartup && startup });
-      state = { status: 'complete', progress: { phase: 'complete', file: '', copiedBytes: state.progress.totalBytes, totalBytes: state.progress.totalBytes, percent: 100 }, error: '', result };
+      const request = { directory: directory.trim(), startup: info.allowStartup && startup };
+      if (selected === 'uninstall') {
+        if (!client.uninstall) throw new Error('This backend does not support uninstall.');
+        removed = await client.uninstall(request.directory);
+        state = { ...state, status: 'uninstalled', result: null, uninstallResult: removed, progress: { ...state.progress, phase: 'complete', percent: 100 } };
+      } else {
+        if (selected === 'upgrade') {
+          if (!client.upgrade) throw new Error('This backend does not support upgrades.');
+          result = await client.upgrade(request);
+        } else result = await client.install(request);
+        state = { status: 'complete', progress: { phase: 'complete', file: '', copiedBytes: state.progress.totalBytes, totalBytes: state.progress.totalBytes, percent: 100 }, error: '', result };
+      }
     } catch (e) {
       error = errorMessage(e);
       state = { ...state, status: 'error', error };
-      try { const final = await client.state(); if (final.status !== 'installing') state = final; } catch { /* Keep the actionable install error. */ }
+      try { const final = await client.state(); if (!running(final.status)) state = final; } catch { /* Keep the operation error. */ }
     } finally { pendingInstall = false; revision++; clearTimeout(timer); }
     if (result) onInstalled?.(result);
+    if (removed) onUninstalled?.(removed);
   }
 
   async function cancel() {
@@ -135,6 +187,14 @@
       {:else if !info}
         <h1>Setup couldn’t load.</h1><p class="intro">The installer could not connect to the application.</p>
         <button class="primary" on:click={load}>Try again <span aria-hidden="true">↗</span></button>
+      {:else if uninstalled}
+        <div class="success-icon" aria-hidden="true">✓</div>
+        <span class="section-number">REMOVAL FINISHED</span><h1>Uninstall complete.</h1>
+        <p class="intro">Managed files for {info.name} have been removed.</p>
+        <div class="receipt"><span>{state?.uninstallResult?.directoryRemoved ? 'FOLDER REMOVED' : 'PERSONAL OR MODIFIED FILES KEPT'}</span><code>{state?.uninstallResult?.directory}</code>
+          {#if state?.uninstallResult?.preservedFiles?.length}<details><summary>View kept files</summary><ul>{#each state.uninstallResult.preservedFiles as file}<li><code>{file}</code></li>{/each}</ul></details>{/if}
+        </div>
+        <button class="primary" on:click={manage}>Set up again <span aria-hidden="true">↗</span></button>
       {:else if complete}
         <div class="success-icon" aria-hidden="true">✓</div>
         <span class="section-number">ALL SET</span><h1>Make yourself<br />at home.</h1>
@@ -142,25 +202,32 @@
         <div class="receipt"><span>INSTALLED IN</span><code>{state?.result?.directory}</code><p>{state?.result?.startup ? 'Launch at login is enabled.' : 'Launch at login is off.'}</p></div>
         <button class="primary" on:click={launch} disabled={launching}>{launching ? 'Opening…' : launched ? `Open ${info.name} again` : `Open ${info.name}`}<span aria-hidden="true">↗</span></button>
         {#if launched}<p class="launch-note" role="status">Application launched. You can close this installer.</p>{/if}
+        {#if client.inspect}<button class="secondary manage" on:click={manage} disabled={launching}>Manage installation</button>{/if}
       {:else if busy}
-        <span class="section-number">INSTALLATION IN PROGRESS</span><h1>Moving in.</h1><p class="intro">Setting up {info.name} on your computer.</p>
-        <div class="progress-top"><span>{state?.progress.phase === 'finishing' ? 'Finishing up' : state?.progress.phase === 'preparing' ? 'Preparing files' : 'Copying application files'}</span><strong>{percent}%</strong></div>
+        <span class="section-number">{operation === 'upgrade' ? 'UPGRADE IN PROGRESS' : operation === 'uninstall' ? 'UNINSTALL IN PROGRESS' : 'INSTALLATION IN PROGRESS'}</span><h1>{operation === 'upgrade' ? 'A fresh start.' : operation === 'uninstall' ? 'Making room.' : 'Moving in.'}</h1><p class="intro">{operation === 'uninstall' ? `Removing ${info.name} and keeping personal files.` : `Setting up ${info.name} on your computer.`}</p>
+        <div class="progress-top"><span>{state?.progress.phase === 'finishing' ? 'Finishing up' : state?.progress.phase === 'preserving' ? 'Keeping personal files' : state?.progress.phase === 'removing' ? 'Removing application files' : state?.progress.phase === 'preparing' ? 'Preparing files' : 'Copying application files'}</span><strong>{percent}%</strong></div>
         <div class="progress-track" role="progressbar" aria-label="Installation progress" aria-valuenow={percent} aria-valuemin="0" aria-valuemax="100"><div style:width="{percent}%"></div></div>
         <div class="progress-detail"><span>{bytes(state?.progress.copiedBytes ?? 0)} / {bytes(state?.progress.totalBytes ?? 0)}</span><span>Please keep this window open</span></div>
-        <code class="current-file">{state?.progress.file || 'Preparing your installation…'}</code>
-        <button class="secondary cancel" on:click={cancel} disabled={cancelRequested}>{cancelRequested ? 'Cancelling…' : 'Cancel installation'}</button>
+        <code class="current-file">{state?.progress.file || 'Preparing your changes…'}</code>
+        <button class="secondary cancel" on:click={cancel} disabled={cancelRequested}>{cancelRequested ? 'Cancelling…' : operation === 'upgrade' ? 'Cancel upgrade' : operation === 'uninstall' ? 'Cancel uninstall' : 'Cancel installation'}</button>
       {:else}
-        <span class="section-number">LET’S GET YOU SET UP</span><h1>Your space.<br />Your setup.</h1><p class="intro">Choose where {info.name} lives and how it starts.</p>
+        <span class="section-number">{managed ? 'MANAGE YOUR APPLICATION' : 'LET’S GET YOU SET UP'}</span><h1>{#if operation === 'uninstall'}Uninstall<br />{info.name}.{:else if managed}Keep it<br />up to date.{:else}Your space.<br />Your setup.{/if}</h1><p class="intro">{operation === 'uninstall' ? 'Personal and modified files will be kept.' : managed ? `Installed v${managed.version}. This installer contains v${info.version}.` : `Choose where ${info.name} lives and how it starts.`}</p>
         <form on:submit|preventDefault={install}>
           <label class="field-label" for="install-directory">Installation folder</label>
-          <div class="path-field"><span aria-hidden="true">⌁</span><input id="install-directory" bind:value={directory} required spellcheck="false" autocomplete="off" aria-describedby="directory-help" disabled={browsing} /><button type="button" class="browse" on:click={browse} disabled={browsing}>{browsing ? 'Choosing…' : 'Browse'}</button></div>
-          <p id="directory-help" class="help">Use a new folder. Setup creates it for you.</p>
-          {#if info.allowStartup}<label class="startup-option"><input type="checkbox" bind:checked={startup} /><span><strong>Start with your day</strong><small>Launch {info.name} when you sign in to your computer.</small></span><span class="option-icon" aria-hidden="true">↗</span></label>{/if}
-          <div class="action-row"><span class="install-note">Just for this user.<br />No administrator access needed.</span><button type="submit" class="primary" disabled={!directory.trim() || browsing}>Install {info.name}<span aria-hidden="true">↗</span></button></div>
+          <div class="path-field"><span aria-hidden="true">⌁</span><input id="install-directory" bind:value={directory} on:input={(event) => scheduleInspect(event.currentTarget.value)} required spellcheck="false" autocomplete="off" aria-describedby="directory-help" disabled={browsing} /><button type="button" class="browse" on:click={browse} disabled={browsing}>{browsing ? 'Choosing…' : 'Browse'}</button></div>
+          <p id="directory-help" class="help">{inspecting ? 'Checking this folder…' : managed ? `Close ${info.name} before upgrading or uninstalling.` : 'Use a new folder. Setup creates it for you.'}</p>
+          {#if managed}
+            <fieldset class="maintenance"><legend>Maintenance action</legend><label><input type="radio" bind:group={operation} value="upgrade" /> Upgrade application</label><label><input type="radio" bind:group={operation} value="uninstall" /> Uninstall application</label></fieldset>
+          {/if}
+          {#if operation === 'uninstall'}
+            <label class="startup-option"><input type="checkbox" bind:checked={confirmed} /><span><strong>Remove {info.name}</strong><small>Remove unchanged application files and its login entry. Keep personal and modified files.</small></span></label>
+          {:else if info.allowStartup}<label class="startup-option"><input type="checkbox" bind:checked={startup} /><span><strong>Start with your day</strong><small>Launch {info.name} when you sign in to your computer.</small></span><span class="option-icon" aria-hidden="true">↗</span></label>{/if}
+          <div class="action-row"><span class="install-note">Just for this user.<br />No administrator access needed.</span><button type="submit" class="primary" class:danger={operation === 'uninstall'} disabled={!directory.trim() || browsing || inspecting || operation === 'uninstall' && !confirmed}>{operation === 'upgrade' ? 'Upgrade' : operation === 'uninstall' ? 'Uninstall' : 'Install'} {info.name}<span aria-hidden="true">↗</span></button></div>
         </form>
       {/if}
       {#if error}<div class="error" role="alert">{error}</div>{/if}
-      {#if state?.status === 'cancelled'}<p role="status" class="help">Installation cancelled. Choose your settings to try again.</p>{/if}
+      {#if warnings.length}<div class="notice" role="status">{#each warnings as warning}<p>{warning}</p>{/each}</div>{/if}
+      {#if state?.status === 'cancelled'}<p role="status" class="help">{operation === 'upgrade' ? 'Upgrade cancelled. The previous installation was kept.' : operation === 'uninstall' ? 'Uninstall cancelled. The installation was kept.' : 'Installation cancelled. Choose your settings to try again.'}</p>{/if}
     </div>
     <footer><slot name="footer"><span>Made to feel at home.</span><span>POWERED BY WAILS INSTALLER</span></slot></footer>
   </div>
@@ -217,6 +284,7 @@
   .startup-option small { font-size:10px;color:var(--_muted);display:block;margin-top:3px }
   .option-icon { margin-left:auto;font-size:20px;color:var(--_muted) }
   .action-row { display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:28px }
+  .action-row .primary { min-width:170px;text-align:left }
   .install-note { font-size:9px;line-height:1.7;color:var(--_muted) }
   .primary { display:flex;align-items:center;justify-content:space-between;gap:26px;padding:13px 17px;font-size:12px;font-weight:700;border:1px solid transparent;border-radius:6px;background:var(--_accent);color:var(--installer-button-text,#202820) }
   .primary:hover:not(:disabled) { filter:brightness(.96);transform:translateY(-1px) }
@@ -233,6 +301,15 @@
   .current-file { font-size:10px;display:block;margin-top:25px;overflow-wrap:anywhere;color:var(--_muted) }
   .secondary { border:1px solid var(--_border);border-radius:6px;padding:10px 15px;background:transparent;color:var(--_ink);font-size:11px }
   .cancel { margin-top:32px }
+  .manage { margin-top:18px }
+  .maintenance { display:flex;gap:18px;border:0;padding:0;margin:0 0 18px;font-size:11px }
+  .maintenance legend { font-size:11px;font-weight:700;margin-bottom:10px }
+  .maintenance label { display:flex;align-items:center;gap:6px;cursor:pointer }
+  .maintenance input { accent-color:var(--_ink) }
+  .primary.danger { background:var(--installer-error-bg,#fff0e9);color:var(--installer-error-text,#8b2f19);border-color:currentColor }
+  .receipt details { font-size:11px;margin-top:12px }
+  .receipt details li { display:list-item;overflow-wrap:anywhere }
+  .notice { border:1px solid var(--_border);padding:12px;border-radius:6px;font-size:11px;overflow-wrap:anywhere;margin-top:16px }
   .success-icon { background:var(--_accent);color:var(--_ink);border-radius:50%;width:40px;height:40px;display:grid;place-items:center;font-size:22px;margin-bottom:22px }
   .receipt { border-block:1px solid var(--_border);padding:16px 0;margin-bottom:24px }
   .receipt > span { font:8px monospace;letter-spacing:1px;color:var(--_muted) }

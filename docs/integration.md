@@ -36,7 +36,7 @@ go mod edit -require=github.com/deedima3/wails-installer@v0.0.0
 go mod edit "-replace=github.com/deedima3/wails-installer=C:/src/wails-installer"
 ```
 
-For a distributable frontend archive, run `npm pack --workspace @wails-installer/svelte --pack-destination <folder>` in this repository, then `npm install <folder>/wails-installer-svelte-0.1.0.tgz` in the consuming frontend. This installs the packaged component independently of the workspace layout.
+For a distributable frontend archive, run `npm pack --workspace @wails-installer/svelte --pack-destination <folder>` in this repository, then `npm install <folder>/wails-installer-svelte-0.2.0.tgz` in the consuming frontend. This installs the packaged component independently of the workspace layout.
 
 ### 2. Prepare the application
 
@@ -120,7 +120,8 @@ func main() {
         AssetServer: &assetserver.Options{Assets: ui},
         OnStartup: func(ctx context.Context) { appContext = ctx },
         OnBeforeClose: func(context.Context) bool {
-            if service.State().Status == "installing" {
+            status := service.State().Status
+            if status == "installing" || status == "upgrading" || status == "uninstalling" {
                 service.Cancel()
                 return true // Wait for cleanup, then close again.
             }
@@ -150,7 +151,7 @@ Wails generates `wailsjs/go/installer/Service.js`. The relative import below ass
 <Installer {client} onInstalled={(result) => console.log(result.directory)} />
 ```
 
-`Install` returns a promise that settles after installation and cleanup. The component polls `State` every 200 ms while that promise is pending, and clears the timer on unmount. Unmounting the UI does not cancel a running install. Call `Cancel` explicitly or wire the window lifecycle as above.
+`Install`, `Upgrade`, and `Uninstall` return promises that settle after the operation and cleanup. The component polls `State` every 200 ms while active, and clears timers on unmount. It uses `Inspect` to detect a managed installation at the chosen path and offer maintenance actions. Unmounting does not cancel a running operation. Call `Cancel` explicitly or wire the window lifecycle as above. See [upgrade and uninstall](lifecycle.md).
 
 The [example frontend](../examples/installer/frontend/src/backend.ts) uses a typed `window.go.installer.Service` lookup to allow a frontend build before binding generation. Generated imports are preferable when your project already generates bindings.
 
@@ -185,14 +186,14 @@ Bind `Service` and call `Info`, `State`, `Browse`, `Install`, `Cancel`, and `Lau
 
 ## Limitations and recovery
 
-- Installation is per-user and for a new directory. Existing paths, including empty directories and symlinks, are refused. This avoids overwriting an existing application. Use a separate location for a new version until you implement an upgrade policy.
+- Installation is per-user. `Install` requires a new directory. `Upgrade` and `Uninstall` accept only a matching ownership receipt; they refuse unowned or foreign folders. Keep application ID stable across versions. Close the application and run maintenance from a separate installer outside its install directory.
 - Use trusted, static payloads and a trusted destination parent. The engine rejects payload traversal, symlinks, special files, Windows reserved filenames, and case collisions. It does not authenticate downloads or protect a directory controlled by another process. `embed.FS` is the recommended source.
 - Hooks are trusted Go code. Write generated files only under `StageDirectory`. A hook must undo its own external changes and honor cancellation. Changes outside staging are not covered by cleanup.
 - Windows startup registration uses `powershell.exe` and WScript.Shell COM. The generated shortcut is copied with exclusive creation, including on filesystems without hard-link support. Restricted PowerShell environments need a custom `StartupManager`.
 - Linux startup depends on a desktop environment that supports XDG autostart. macOS writes a LaunchAgent for the next login, without loading it in the current session. OS settings may let the user disable login items.
 - Application dependencies such as WebView2, WebKitGTK, native libraries, and signing/notarization are the application distributor's responsibility. macOS bundles with framework symlinks need a different payload strategy. The built-in copier does not preserve extended attributes, ACLs, symlinks, or timestamps.
 - On macOS, the default launcher recognizes a main executable at `<bundle>.app/Contents/MacOS/<executable>` and opens its bundle through `/usr/bin/open`. Its LaunchAgent uses `/usr/bin/open -g` for the same bundle. Standalone binaries and executables on other platforms launch directly with their containing directory as the working directory. For custom arguments, implement `Launcher` as shown in [customization](customization.md). Resolve resources relative to the executable or bundle, rather than assuming a working directory.
-- Concurrent library instances targeting the same directory use a sibling `.<directory-name>.wails-installer-lock` directory. A crash or forced termination can leave that lock and a `.<id>-install-*` staging directory. Confirm no installer is running, inspect those paths, then remove only those temporary artifacts. A crash after publication can leave a complete application without a login entry. Inspect the destination before deciding whether to remove or use it.
+- Concurrent instances targeting the same directory use a sibling `.<directory-name>.wails-installer-lock` directory. The native startup manager also uses a lock beside its login entry. A crash can leave locks, `.<id>-install-*` or `.<id>-uninstall-*` staging folders, and `.<directory-name>-backup-*` folders. Do not delete a backup until you have inspected it; it may be the only intact previous version. See [recovery](lifecycle.md#failure-and-crash-recovery).
 - Rollback is best effort when permissions or filesystem errors prevent deletion. The returned error includes cleanup failures. Parent directories created by setup remain. Staging plus the final copy needs free disk space roughly equal to the payload, in addition to the installer executable.
 
 ## References

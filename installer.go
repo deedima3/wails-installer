@@ -49,6 +49,7 @@ func New(c Config, options ...Option) (*Installer, error) {
 		c.MaxBytes = 2 << 30
 	}
 	c.Executables = append([]string(nil), c.Executables...)
+	c.PreservePaths = append([]string(nil), c.PreservePaths...)
 	i := &Installer{config: c, info: Info{c.ID, c.Name, c.Version, c.Description, c.DefaultDirectory, c.AllowStartup, runtime.GOOS}, startup: nativeStartup{}, launcher: processLauncher{}}
 	for _, option := range options {
 		option(i)
@@ -61,112 +62,15 @@ func New(c Config, options ...Option) (*Installer, error) {
 
 func (i *Installer) Info() Info { return i.info }
 
-// Install refuses existing targets. It stages files in a private sibling directory
-// and publishes them with rename. A failed/cancelled copy leaves no target files.
-// The destination's parent must be trusted and writable by the current user.
-func (i *Installer) Install(ctx context.Context, request Request, report func(Progress)) (result Result, err error) {
-	if !i.mu.TryLock() {
-		return result, ErrBusy
-	}
-	defer i.mu.Unlock()
-	if request.Startup && !i.config.AllowStartup {
-		return result, errors.New("launch at login is disabled by this application")
-	}
-	dir, err := validateDirectory(request.Directory)
-	if err != nil {
-		return result, err
-	}
-	if err = ctx.Err(); err != nil {
-		return result, err
-	}
-	entries, total, err := i.inventory(ctx)
-	if err != nil {
-		return result, err
-	}
-	if err = os.MkdirAll(filepath.Dir(dir), 0755); err != nil {
-		return result, fmt.Errorf("create parent: %w", err)
-	}
-	lock := filepath.Join(filepath.Dir(dir), "."+filepath.Base(dir)+".wails-installer-lock")
-	if err = os.Mkdir(lock, 0700); err != nil {
-		return result, fmt.Errorf("reserve installation, another installer may be running: %w", err)
-	}
-	defer func() {
-		if e := os.Remove(lock); e != nil {
-			err = errors.Join(err, fmt.Errorf("remove installation lock: %w", e))
-		}
-	}()
-	stage, err := os.MkdirTemp(filepath.Dir(dir), "."+i.config.ID+"-install-*")
-	if err != nil {
-		return result, err
-	}
-	defer func() {
-		if e := os.RemoveAll(stage); e != nil {
-			err = errors.Join(err, fmt.Errorf("clean staging directory: %w", e))
-		}
-	}()
-	installation := Installation{stage, dir, filepath.Join(dir, filepath.FromSlash(i.config.Executable))}
-	progress := Progress{Phase: "preparing", TotalBytes: total}
-	emit := func() {
-		if report != nil {
-			report(progress)
-		}
-	}
-	emit()
-	if hook := i.config.Hooks.BeforeCopy; hook != nil {
-		if err = hook(ctx, installation); err != nil {
-			return result, fmt.Errorf("before copy: %w", err)
-		}
-	}
-	for _, entry := range entries {
-		if err = ctx.Err(); err != nil {
-			return result, err
-		}
-		target := filepath.Join(stage, filepath.FromSlash(entry.path))
-		if err = os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-			return result, err
-		}
-		progress.Phase, progress.File = "copying", entry.path
-		err = i.copyFile(ctx, entry, target, func(n int64) {
-			progress.CopiedBytes += n
-			if total > 0 {
-				progress.Percent = int(float64(progress.CopiedBytes) / float64(total) * 95)
-			}
-			emit()
-		})
-		if err != nil {
-			return result, fmt.Errorf("copy %s: %w", entry.path, err)
-		}
-	}
-	if hook := i.config.Hooks.AfterCopy; hook != nil {
-		if err = hook(ctx, installation); err != nil {
-			return result, fmt.Errorf("after copy: %w", err)
-		}
-	}
-	if err = ctx.Err(); err != nil {
-		return result, err
-	}
-	// Check again after hooks so a concurrent install cannot silently replace a target.
-	if _, e := os.Lstat(dir); !errors.Is(e, os.ErrNotExist) {
-		return result, fmt.Errorf("destination already exists or cannot be inspected: %s", dir)
-	}
-	progress.Phase, progress.File, progress.Percent = "finishing", "", 97
-	emit()
-	if err = os.Chmod(stage, 0755); err != nil {
-		return result, err
-	}
-	if err = os.Rename(stage, dir); err != nil {
-		return result, fmt.Errorf("publish installation: %w", err)
-	}
-	// No cancellation boundary after registration: a committed install must not
-	// be reported cancelled while its login entry still points at removed files.
-	if request.Startup {
-		if err = i.startup.Enable(ctx, i.info, installation.Executable); err != nil {
-			return result, errors.Join(fmt.Errorf("register launch at login: %w", err), os.RemoveAll(dir))
-		}
-	}
-	progress.Phase, progress.Percent = "complete", 100
-	emit()
-	return Result{dir, installation.Executable, request.Startup}, nil
+// Install creates a fresh installation and records its owned files.
+func (i *Installer) Install(ctx context.Context, request Request, report func(Progress)) (Result, error) {
+	return i.install(ctx, request, false, report)
+}
+
+// Upgrade replaces an owned installation, preserving personal files and rolling
+// back the old application and startup registration if publication fails.
+func (i *Installer) Upgrade(ctx context.Context, request Request, report func(Progress)) (Result, error) {
+	return i.install(ctx, request, true, report)
 }
 
 type payloadFile struct {
@@ -221,8 +125,8 @@ func (i *Installer) inventory(ctx context.Context) ([]payloadFile, int64, error)
 		if p == "." {
 			return nil
 		}
-		if !safePath(p) {
-			return fmt.Errorf("unsafe payload path %q", p)
+		if !safePath(p) || reservedPath(p) {
+			return fmt.Errorf("unsafe or reserved payload path %q", p)
 		}
 		folded := strings.ToLower(p)
 		if seen[folded] {

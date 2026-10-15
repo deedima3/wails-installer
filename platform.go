@@ -48,6 +48,54 @@ func macBundle(executable string) string {
 
 type nativeStartup struct{}
 
+func (nativeStartup) Snapshot(ctx context.Context, info Info) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	name, err := startupPath(info.ID)
+	if err != nil {
+		return nil, err
+	}
+	stat, err := os.Lstat(name)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !stat.Mode().IsRegular() || stat.Size() > 1<<20 {
+		return nil, errors.New("startup registration is not a regular file or exceeds size limit")
+	}
+	return os.ReadFile(name)
+}
+
+func (nativeStartup) Restore(ctx context.Context, info Info, data []byte) error {
+	if _, err := (nativeStartup{}).Snapshot(ctx, info); err != nil {
+		return err
+	}
+	if data == nil {
+		return (nativeStartup{}).Disable(ctx, info)
+	}
+	name, err := startupPath(info.ID)
+	if err != nil {
+		return err
+	}
+	if err = os.MkdirAll(filepath.Dir(name), 0700); err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(filepath.Dir(name), ".startup-restore-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	_, err = file.Write(data)
+	err = errors.Join(err, file.Sync(), file.Close())
+	if err != nil {
+		return err
+	}
+	return os.Rename(file.Name(), name)
+}
+
 func startupPath(id string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {

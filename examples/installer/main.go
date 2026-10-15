@@ -56,7 +56,8 @@ func main() {
 		OnStartup:   func(ctx context.Context) { appContext = ctx },
 		OnBeforeClose: func(context.Context) bool {
 			// Keep the window open until cancellation and staging cleanup finish.
-			if service.State().Status == "installing" {
+			status := service.State().Status
+			if status == "installing" || status == "upgrading" || status == "uninstalling" {
 				service.Cancel()
 				return true
 			}

@@ -149,8 +149,34 @@ func verifyWindowsShortcut(t *testing.T, path, executable string) {
 	if err := json.Unmarshal(output, &link); err != nil {
 		t.Fatalf("decode shortcut: %v: %s", err, output)
 	}
-	if !strings.EqualFold(filepath.Clean(link.Target), filepath.Clean(executable)) || !strings.EqualFold(filepath.Clean(link.Directory), filepath.Dir(executable)) || link.Arguments != "" {
+	if !sameFilesystemPath(link.Target, executable) || !sameFilesystemPath(link.Directory, filepath.Dir(executable)) || link.Arguments != "" {
 		t.Fatalf("incorrect shortcut: %+v, expected %s", link, executable)
+	}
+}
+
+func sameFilesystemPath(first, second string) bool {
+	a, err := os.Stat(first)
+	if err != nil {
+		return false
+	}
+	b, err := os.Stat(second)
+	return err == nil && os.SameFile(a, b)
+}
+
+func TestPathIdentityAcceptsFilesystemAliases(t *testing.T) {
+	dir := t.TempDir()
+	original, alias := filepath.Join(dir, "long-name"), filepath.Join(dir, "alias")
+	if err := os.WriteFile(original, []byte("test"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(original, alias); err != nil {
+		t.Skip("hard links unavailable:", err)
+	}
+	if !sameFilesystemPath(alias, original) {
+		t.Fatal("different names for the same file rejected")
+	}
+	if sameFilesystemPath(filepath.Join(dir, "missing"), original) {
+		t.Fatal("missing path accepted")
 	}
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "@wails-installer/svelte",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Customizable Svelte installer UI for the wails-installer Go library",
   "type": "module",
   "license": "MIT",

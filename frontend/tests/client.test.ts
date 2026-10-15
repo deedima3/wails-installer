@@ -9,14 +9,23 @@ describe('binding adapter', () => {
       State: vi.fn(async () => ({ status: 'ready', progress: {} as InstallerState['progress'], error: '' })),
       Browse: vi.fn(async () => '/apps/My app'),
       Install: vi.fn(async () => ({} as InstallResult)),
+      Inspect: vi.fn(async () => null), Upgrade: vi.fn(async () => ({} as InstallResult)),
+      Uninstall: vi.fn(async () => ({ directory: '/apps/My app', removedFiles: 1, preservedFiles: [], directoryRemoved: true })),
       Cancel: vi.fn(async () => {}), Launch: vi.fn(async () => {})
     };
     const client = createClient(bindings);
     const request = { directory: '/apps/My app', startup: true };
     await client.info(); await client.state(); expect(await client.browse()).toBe('/apps/My app');
     await client.install(request); await client.cancel(); await client.launch();
+    await client.inspect!(request.directory); await client.upgrade!(request); await client.uninstall!(request.directory);
     for (const method of Object.values(bindings)) expect(method).toHaveBeenCalledOnce();
     expect(bindings.Install).toHaveBeenCalledWith(request);
+    expect(bindings.Upgrade).toHaveBeenCalledWith(request);
+    expect(bindings.Uninstall).toHaveBeenCalledWith(request.directory);
+  });
+  it('keeps older install-only bindings compatible', () => {
+    const client = createClient({} as InstallerBindings);
+    expect(client.inspect).toBeUndefined(); expect(client.upgrade).toBeUndefined(); expect(client.uninstall).toBeUndefined();
   });
   it('preserves backend rejections', async () => {
     const client = createClient({ Install: async () => { throw 'destination exists'; } } as unknown as InstallerBindings);

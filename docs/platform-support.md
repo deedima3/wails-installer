@@ -1,6 +1,6 @@
 # Platform support and validation
 
-The Go engine supports fresh per-user installs on Linux, Windows, and macOS. It has no Wails dependency, so an existing Wails project can import it and bind `Service`. The optional Svelte component accepts generated bindings through `createClient`.
+The Go engine supports per-user installs, upgrades, and uninstalling on Linux, Windows, and macOS. It has no Wails dependency, so an existing Wails project can import it and bind `Service`. The optional Svelte component accepts generated bindings through `createClient`.
 
 ## Platform behavior
 
@@ -19,9 +19,10 @@ The [workflow](../.github/workflows/ci.yml) is configured with native Ubuntu, Wi
 | Check | Linux | Windows | macOS |
 | --- | --- | --- | --- |
 | Copy, cancellation, rollback, path validation, concurrent installs | Native race tests | Native race tests | Native race tests |
+| Upgrade, data preservation, modified-file protection, rollback, uninstall | Native race tests | Native race tests | Native race tests |
 | Native default install and startup directories | Native test | Native test | Native test |
 | Create, inspect, preserve, and remove startup entries in temporary user directories | `.desktop` file | Actual `.lnk`, read through WScript.Shell | LaunchAgent, checked with `plutil` |
-| Independent Go module imports the library and launches a real installed executable | Native test | Native test | Native test |
+| Independent module imports the library, installs/launches/upgrades/uninstalls, and preserves notes | Native test | Native test | Native test |
 | Run the generated native login command | Registration checked | Open the `.lnk` through the OS shell | Run the `.app` LaunchAgent command |
 | Install and open a conventional `.app` bundle | Not applicable | Not applicable | Native LaunchServices test |
 | Generate Wails v2 bindings and type-check `createClient` against them | Native build job | Native build job | Native build job |
