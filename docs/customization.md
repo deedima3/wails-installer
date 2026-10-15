@@ -59,6 +59,53 @@ Keep contrast readable when changing colors, including focus outlines, error mes
 
 The default UI copy is English. For localization, additional setup pages, or a different layout, create your own UI against the same `InstallerClient`. App name, version, and description come from Go `Config`. CSS variables and slots cover branding rather than translating every label.
 
+## Window size and borderless mode
+
+Configure the native window in your installer project's `main.go`. The component's CSS maximum width does not limit the desktop window. The example uses these Wails v2 settings:
+
+```go
+err = wails.Run(&options.App{
+    Title: "Install My app",
+    Width: 1060, Height: 800,
+    MinWidth: 560, MinHeight: 680,
+    MaxWidth: 1060, MaxHeight: 800,
+    Frameless: true,
+    // Keep AssetServer, Bind, and your lifecycle callbacks here.
+})
+```
+
+`MaxWidth` and `MaxHeight` cap resizing at the initial size. Keep the minimum values at or below the maximum values. To prevent all user resizing, add `DisableResize: true`. Choose dimensions that fit the displays you support, and keep the content scrollable at smaller sizes. Wails describes these options in its [application options reference](https://wails.io/docs/reference/options/).
+
+Linux compositors can override application size hints. In this repository's Hyprland testing, the compositor allowed sizes above the maximum even when GTK reported the correct limits. If your compositor overrides them, configure its own floating and size rules for the installer. Floating alone may not enforce a maximum. The library does not modify users' window-manager settings.
+
+`Frameless: true` removes the native title bar and borders. Use the exported `WindowBar` to supply a drag region and accessible window buttons. In Wails v2, wire it to the generated runtime functions:
+
+```svelte
+<script lang="ts">
+  import { Installer, WindowBar, createClient } from '@wails-installer/svelte';
+  import * as bindings from '../wailsjs/go/installer/Service';
+  import { Quit, WindowMinimise } from '../wailsjs/runtime/runtime';
+  const client = createClient(bindings);
+</script>
+
+<div class="installer-window">
+  <WindowBar title="Install My app" onClose={Quit} onMinimize={WindowMinimise} />
+  <main><Installer {client} /></main>
+</div>
+
+<style>
+  :global(body) { margin: 0; }
+  .installer-window { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+  main { flex: 1; min-height: 0; overflow: auto; padding: 20px; }
+</style>
+```
+
+`WindowBar` takes `title`, a required `onClose` callback, and an optional `onMinimize` callback. Omitting `onMinimize` hides that button. It inherits the installer color and font CSS variables from a common wrapper. It has no maximize button. The bar marks its title as draggable with Wails v2's default `--wails-draggable: drag`, and excludes the buttons with `no-drag`. Keep the default `CSSDragProperty` and `CSSDragValue` when using it. See Wails' [frameless guide](https://wails.io/docs/guides/frameless/).
+
+Use `Quit` for closing so the `OnBeforeClose` handler in the integration guide can cancel an active operation and wait for cleanup. Avoid `window.close()`. The [runnable example](../examples/installer) demonstrates this layout and keeps the title bar visible while the installer content scrolls.
+
+To keep native window decorations, set `Frameless: false` and omit `WindowBar`. The size limits still apply. The title bar callbacks can also call your Wails v3 window API; configure v3's own window limits and drag regions in the host project. This repository's native example targets Wails v2.
+
 ## Change install paths
 
 Set `Config.DefaultDirectory` to an absolute path. The user can edit it in the component. `DirectoryPicker` should return the full new application directory, even when the native dialog selects its existing parent. An empty string means the user dismissed the picker.

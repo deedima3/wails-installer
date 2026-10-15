@@ -7,6 +7,7 @@ A Go installer engine and a customizable Svelte setup screen for desktop applica
 - Show file-copy progress and cancel an installation.
 - Upgrade an existing installation with rollback and keep personal files during removal.
 - Change colors, typography, logo, sidebar, and footer.
+- Set native window size limits and use a [borderless title bar](docs/customization.md#window-size-and-borderless-mode).
 - Add Go hooks, a custom startup manager, or a custom process launcher.
 
 The engine uses the Go standard library and works independently of the frontend. Existing Wails projects can keep their own frontend and call the service directly. The included component supports Svelte 4 and 5. The desktop example uses Wails v2. The [integration guide](docs/integration.md#wails-v3) also shows v3 service registration.

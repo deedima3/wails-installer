@@ -117,6 +117,8 @@ func main() {
     if err != nil { log.Fatal(err) }
     err = wails.Run(&options.App{
         Title: "Install My app", Width: 1060, Height: 800,
+        MinWidth: 560, MinHeight: 680,
+        MaxWidth: 1060, MaxHeight: 800,
         AssetServer: &assetserver.Options{Assets: ui},
         OnStartup: func(ctx context.Context) { appContext = ctx },
         OnBeforeClose: func(context.Context) bool {
@@ -135,6 +137,8 @@ func main() {
 ```
 
 If your project already uses `OnStartup`, `OnShutdown`, or `OnBeforeClose`, compose these actions into the existing callbacks. Keep the `Service` pointer stable for the life of the window. Do not block Wails startup on installation.
+
+The maximum dimensions cap the native window at the initial installer size while allowing a smaller window. Set `DisableResize: true` as well if you want a fixed size. For a borderless window with custom minimize and close buttons, follow [window size and borderless mode](customization.md#window-size-and-borderless-mode). These settings belong to the host Wails app; importing the installer service does not change your existing window.
 
 ### 4. Mount the Svelte component
 

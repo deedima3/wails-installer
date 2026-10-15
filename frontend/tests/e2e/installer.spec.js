@@ -1,5 +1,24 @@
 import { test, expect } from '@playwright/test';
 
+test('borderless title bar keeps controls outside the drag region', async ({ page }) => {
+  await page.goto('/');
+  const dragTitle = page.locator('header.window-bar > .title');
+  await expect(dragTitle).toHaveText('Install Lumen');
+  expect(await dragTitle.evaluate(element => getComputedStyle(element).getPropertyValue('--wails-draggable').trim())).toBe('drag');
+  const minimize = page.getByRole('button', { name: 'Minimize window' });
+  const close = page.getByRole('button', { name: 'Close window' });
+  for (const control of [minimize, close]) {
+    expect(await control.evaluate(element => getComputedStyle(element).getPropertyValue('--wails-draggable').trim())).toBe('no-drag');
+    await control.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('status')).toHaveText(control === minimize
+      ? 'Minimize requested. In Wails this minimizes the installer.'
+      : 'Close requested. In Wails this closes the installer.');
+  }
+  // A browser preview dispatches window actions without closing the browser.
+  await expect(page.getByLabel('Installation folder')).toBeVisible();
+});
+
 test('choose a directory, enable startup, install and launch', async ({ page }) => {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));

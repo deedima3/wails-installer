@@ -2,7 +2,22 @@ import { createClient, type InstallerBindings } from '@wails-installer/svelte';
 
 // Equivalent to importing generated wailsjs/go/installer/Service functions.
 // This lookup lets Vite build before the Wails CLI has generated bindings.
-declare global { interface Window { go?: { installer?: { Service?: InstallerBindings } } } }
+interface WindowRuntime { Quit(): void; WindowMinimise(): void }
+declare global {
+  interface Window {
+    go?: { installer?: { Service?: InstallerBindings } };
+    runtime?: WindowRuntime;
+  }
+}
+
+export function windowControls() {
+  const runtime = window.runtime;
+  if (!runtime) throw new Error('Window controls require the Wails desktop runtime.');
+  return {
+    close: () => runtime.Quit(),
+    minimize: () => runtime.WindowMinimise()
+  };
+}
 
 export function backend() {
   const bindings = window.go?.installer?.Service;

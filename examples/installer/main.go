@@ -52,6 +52,9 @@ func main() {
 	must(err)
 	must(wails.Run(&options.App{
 		Title: "Install Lumen", Width: 1060, Height: 800, MinWidth: 560, MinHeight: 680,
+		MaxWidth: 1060, MaxHeight: 800,
+		// The frontend supplies a draggable title bar and native window actions.
+		Frameless:   true,
 		AssetServer: &assetserver.Options{Assets: ui},
 		OnStartup:   func(ctx context.Context) { appContext = ctx },
 		OnBeforeClose: func(context.Context) bool {

@@ -18,6 +18,8 @@ Build with `npm run build` before installing this package from a local checkout.
 
 Props include `client`, `logoUrl`, `eyebrow`, `className`, `onInstalled`, and `onUninstalled`. Named slots `sidebar` and `footer` replace those sections. The backend provides the app name, description, version, initial directory, and startup availability.
 
+For a borderless installer, the package also exports `WindowBar`. Pass a `title`, a required `onClose` callback, and optionally `onMinimize`. In Wails v2, use runtime `Quit` and `WindowMinimise`, set `Frameless: true`, and set native `MaxWidth`/`MaxHeight` limits in Go. See [window size and borderless mode](https://github.com/deedima3/wails-installer/blob/main/docs/customization.md#window-size-and-borderless-mode) for the complete setup. The UI package does not resize your host window automatically.
+
 When `Inspect`, `Upgrade`, and `Uninstall` are present in the generated bindings, the component detects managed installations and offers upgrade/uninstall actions. Uninstall requires confirmation and reports kept personal files. Older install-only bindings remain supported without those controls. Regenerate bindings after updating the Go library.
 
 See the repository's [integration guide](https://github.com/deedima3/wails-installer/blob/main/docs/integration.md), [customization guide](https://github.com/deedima3/wails-installer/blob/main/docs/customization.md), and [API reference](https://github.com/deedima3/wails-installer/blob/main/docs/api.md). These URLs assume publication at the module's declared repository path.

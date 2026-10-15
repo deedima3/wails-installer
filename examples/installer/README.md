@@ -2,6 +2,8 @@
 
 This example is a separate Wails v2 installer that embeds a compiled application. Its Svelte UI consumes the local component package. A small Wails target application is included in `cmd/lumen`.
 
+The installer opens borderless at 1060 × 800 and caps resizing at those dimensions. It can shrink to 560 × 680; content scrolls while the custom title bar remains visible. Drag the title to move it, or use its minimize and close buttons. Closing during an operation requests cancellation and keeps the window open until cleanup finishes. Set `Frameless: false` in `main.go` and remove `WindowBar` from `frontend/src/App.svelte` to restore the native title bar. See [window customization](../../docs/customization.md#window-size-and-borderless-mode) for fixed-size settings and reuse in another project.
+
 ## Prerequisites
 
 - Go 1.25 or newer for the pinned Wails v2.15.0 example.
