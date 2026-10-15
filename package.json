@@ -1,0 +1,21 @@
+{
+  "name": "wails-installer-workspace",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "examples/installer/frontend"
+  ],
+  "scripts": {
+    "check": "npm run check --workspace @wails-installer/svelte && npm run check --workspace installer-example",
+    "test": "npm run test --workspace @wails-installer/svelte",
+    "build": "npm run build --workspace @wails-installer/svelte && npm run build --workspace installer-example",
+    "dev": "npm run dev --workspace @wails-installer/svelte",
+    "test:ui": "playwright test",
+    "prepare:example": "node scripts/prepare-example.mjs",
+    "check:bindings": "node scripts/check-wails-bindings.mjs",
+    "build:example": "node scripts/build-example.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1"
+  }
+}

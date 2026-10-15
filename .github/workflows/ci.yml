@@ -1,0 +1,64 @@
+name: Checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  engine:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: false
+      - run: go test -race -cover ./...
+      - run: go vet ./...
+      - name: Import, install, register startup, and launch from another Go module
+        working-directory: integration/consumer
+        run: go test -race -v ./...
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache-dependency-path: examples/installer/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+      - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0
+      - run: npm ci
+      - run: npm run build
+      - run: npm run prepare:example
+      - name: Check generated bindings against the reusable Svelte client
+        run: npm run check:bindings
+      - name: Build and package the importing Wails project
+        run: npm run build:example
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run check
+      - run: npm test
+      - run: npm run build:demo --workspace @wails-installer/svelte
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:ui

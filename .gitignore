@@ -1,0 +1,16 @@
+node_modules/
+dist/
+demo-dist/
+**/build/bin/
+.svelte-kit/
+package.json.md5
+.agents/
+.aws/
+.codex/
+*.test
+coverage.out
+playwright-report/
+test-results/
+examples/installer/payload/*
+!examples/installer/payload/README.txt
+examples/installer/frontend/wailsjs/
